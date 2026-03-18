@@ -7,11 +7,19 @@ document.querySelector('#app').innerHTML = `
 
     <section class="card">
       <label for="stepLength">Step length (cm)</label>
-      <input id="stepLength" type="number" min="1" step="0.1" placeholder="e.g. 70" />
+      <input
+        id="stepLength"
+        type="number"
+        min="1"
+        step="0.1"
+        placeholder="e.g. 70"
+      />
 
-      <button id="calculateBtn">Calculate interval</button>
-      <button id="startCueBtn" disabled>Start cue</button>
-      <button id="stopCueBtn" disabled>Stop cue</button>
+      <div class="buttonRow">
+        <button id="calculateBtn">Calculate interval</button>
+        <button id="startCueBtn" disabled>Start cue</button>
+        <button id="stopCueBtn" disabled>Stop cue</button>
+      </div>
 
       <div id="result" class="result">
         Insert your step length and calculate the interval.
@@ -62,12 +70,16 @@ function playBeep() {
   oscillator.stop(audioContext.currentTime + 0.08)
 }
 
+function resetLiveData() {
+  liveData.innerHTML = `
+    Elapsed time: <strong>0.0 s</strong><br>
+    Theoretical steps: <strong>0</strong>
+  `
+}
+
 function updateLiveData() {
   if (!startTime) {
-    liveData.innerHTML = `
-      Elapsed time: <strong>0.0 s</strong><br>
-      Theoretical steps: <strong>0</strong>
-    `
+    resetLiveData()
     return
   }
 
@@ -86,6 +98,7 @@ calculateBtn.addEventListener('click', () => {
     result.textContent = 'Please enter a valid step length in centimeters.'
     startCueBtn.disabled = true
     stopCueBtn.disabled = true
+    resetLiveData()
     return
   }
 
@@ -100,7 +113,9 @@ calculateBtn.addEventListener('click', () => {
     Steps per minute: <strong>${stepsPerMinute.toFixed(2)}</strong>
   `
 
+  resetLiveData()
   startCueBtn.disabled = false
+  stopCueBtn.disabled = true
 })
 
 startCueBtn.addEventListener('click', async () => {
@@ -118,11 +133,9 @@ startCueBtn.addEventListener('click', async () => {
   if (liveTimer) clearInterval(liveTimer)
 
   startTime = Date.now()
-  theoreticalStepCount = 0
-  updateLiveData()
+  theoreticalStepCount = 1
 
   playBeep()
-  theoreticalStepCount += 1
   updateLiveData()
 
   cueTimer = setInterval(() => {
@@ -150,6 +163,10 @@ stopCueBtn.addEventListener('click', () => {
     liveTimer = null
   }
 
+  startTime = null
   startCueBtn.disabled = false
   stopCueBtn.disabled = true
+  updateLiveData()
 })
+
+resetLiveData()

@@ -62,10 +62,15 @@ input {
   color: #111;
 }
 
+.buttonRow {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 button {
   display: inline-block;
   padding: 12px 18px;
-  margin-right: 10px;
   border: 0;
   border-radius: 10px;
   background: #111;
