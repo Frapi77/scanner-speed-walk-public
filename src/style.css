@@ -22,7 +22,7 @@ input {
 }
 
 .container {
-  max-width: 680px;
+  max-width: 760px;
   margin: 0 auto;
   padding: 48px 20px;
 }
@@ -92,5 +92,5 @@ button:disabled {
   padding: 16px;
   border-radius: 12px;
   background: #f1f1f1;
-  line-height: 1.6;
+  line-height: 1.7;
 }
