@@ -16,6 +16,11 @@ document.querySelector('#app').innerHTML = `
       <div id="result" class="result">
         Insert your step length and calculate the interval.
       </div>
+
+      <div id="liveData" class="result">
+        Elapsed time: <strong>0.0 s</strong><br>
+        Theoretical steps: <strong>0</strong>
+      </div>
     </section>
   </main>
 `
@@ -28,10 +33,14 @@ const calculateBtn = document.querySelector('#calculateBtn')
 const startCueBtn = document.querySelector('#startCueBtn')
 const stopCueBtn = document.querySelector('#stopCueBtn')
 const result = document.querySelector('#result')
+const liveData = document.querySelector('#liveData')
 
 let intervalSeconds = null
 let cueTimer = null
+let liveTimer = null
 let audioContext = null
+let startTime = null
+let theoreticalStepCount = 0
 
 function playBeep() {
   if (!audioContext) return
@@ -51,6 +60,23 @@ function playBeep() {
 
   oscillator.start()
   oscillator.stop(audioContext.currentTime + 0.08)
+}
+
+function updateLiveData() {
+  if (!startTime) {
+    liveData.innerHTML = `
+      Elapsed time: <strong>0.0 s</strong><br>
+      Theoretical steps: <strong>0</strong>
+    `
+    return
+  }
+
+  const elapsedSeconds = (Date.now() - startTime) / 1000
+
+  liveData.innerHTML = `
+    Elapsed time: <strong>${elapsedSeconds.toFixed(1)} s</strong><br>
+    Theoretical steps: <strong>${theoreticalStepCount}</strong>
+  `
 }
 
 calculateBtn.addEventListener('click', () => {
@@ -88,14 +114,26 @@ startCueBtn.addEventListener('click', async () => {
     await audioContext.resume()
   }
 
-  if (cueTimer) {
-    clearInterval(cueTimer)
-  }
+  if (cueTimer) clearInterval(cueTimer)
+  if (liveTimer) clearInterval(liveTimer)
+
+  startTime = Date.now()
+  theoreticalStepCount = 0
+  updateLiveData()
 
   playBeep()
+  theoreticalStepCount += 1
+  updateLiveData()
+
   cueTimer = setInterval(() => {
     playBeep()
+    theoreticalStepCount += 1
+    updateLiveData()
   }, intervalSeconds * 1000)
+
+  liveTimer = setInterval(() => {
+    updateLiveData()
+  }, 100)
 
   startCueBtn.disabled = true
   stopCueBtn.disabled = false
@@ -105,6 +143,11 @@ stopCueBtn.addEventListener('click', () => {
   if (cueTimer) {
     clearInterval(cueTimer)
     cueTimer = null
+  }
+
+  if (liveTimer) {
+    clearInterval(liveTimer)
+    liveTimer = null
   }
 
   startCueBtn.disabled = false
