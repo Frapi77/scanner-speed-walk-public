@@ -24,6 +24,7 @@ document.querySelector('#app').innerHTML = `
         step="1"
         value="4"
       />
+
       <div id="sensitivityInfo" class="result">
         Sensitivity: <strong>4</strong><br>
         Lower = stricter, higher = more reactive<br>
@@ -35,6 +36,17 @@ document.querySelector('#app').innerHTML = `
         <button id="calculateBtn">Calculate interval</button>
         <button id="enableMotionBtn">Enable motion</button>
         <button id="enableGpsBtn">Enable GPS</button>
+      </div>
+
+      <div class="buttonRow" style="margin-top: 10px;">
+        <button id="startCalibrationBtn">Start calibration</button>
+        <button id="resetCalibrationBtn">Reset calibration</button>
+      </div>
+
+      <div id="calibrationBox" class="result">
+        Calibration: <strong>off</strong><br>
+        Calibration detected steps: <strong>0</strong><br>
+        Walk a few steps and adjust sensitivity until one bodily step gives one count.
       </div>
 
       <div class="buttonRow" style="margin-top: 10px;">
@@ -75,6 +87,9 @@ const sensitivityInfo = document.querySelector('#sensitivityInfo')
 const calculateBtn = document.querySelector('#calculateBtn')
 const enableMotionBtn = document.querySelector('#enableMotionBtn')
 const enableGpsBtn = document.querySelector('#enableGpsBtn')
+const startCalibrationBtn = document.querySelector('#startCalibrationBtn')
+const resetCalibrationBtn = document.querySelector('#resetCalibrationBtn')
+const calibrationBox = document.querySelector('#calibrationBox')
 const startSessionBtn = document.querySelector('#startSessionBtn')
 const stopSessionBtn = document.querySelector('#stopSessionBtn')
 const exportCsvBtn = document.querySelector('#exportCsvBtn')
@@ -94,10 +109,12 @@ let motionEnabled = false
 let gpsEnabled = false
 let gpsDenied = false
 let sessionRunning = false
+let calibrationRunning = false
 
 let startTime = null
 let theoreticalStepCount = 0
 let detectedStepCount = 0
+let calibrationDetectedSteps = 0
 let currentMisalignmentMs = 0
 let cumulativeDriftMs = 0
 let motionMagnitude = 0
@@ -118,17 +135,10 @@ const gpsTrack = []
 
 function mapSensitivity(value) {
   const v = Number(value)
+  const threshold = 4.6 - ((v - 1) / 9) * 3.2
+  const refractory = Math.round(1150 - ((v - 1) / 9) * 700)
 
-  // 1 = very strict, 10 = very reactive
-  // threshold goes down as sensitivity rises
-  // refractory goes down as sensitivity rises
-  const threshold = 4.6 - ((v - 1) / 9) * 3.2   // ~4.6 -> 1.4
-  const refractory = Math.round(1150 - ((v - 1) / 9) * 700) // 1150 -> 450
-
-  return {
-    threshold,
-    refractory,
-  }
+  return { threshold, refractory }
 }
 
 function updateSensitivity() {
@@ -161,6 +171,14 @@ function updateSensitivity() {
   }
 }
 
+function updateCalibrationBox() {
+  calibrationBox.innerHTML = `
+    Calibration: <strong>${calibrationRunning ? 'on' : 'off'}</strong><br>
+    Calibration detected steps: <strong>${calibrationDetectedSteps}</strong><br>
+    Walk a few steps and adjust sensitivity until one bodily step gives one count.
+  `
+}
+
 function updateStatusBox() {
   let gpsText = 'not enabled'
   if (gpsDenied) gpsText = 'denied'
@@ -174,9 +192,8 @@ function updateStatusBox() {
 }
 
 function updateLiveData() {
-  const elapsedSeconds = startTime && sessionRunning
-    ? (Date.now() - startTime) / 1000
-    : 0
+  const elapsedSeconds =
+    startTime && sessionRunning ? (Date.now() - startTime) / 1000 : 0
 
   liveData.innerHTML = `
     Elapsed time: <strong>${elapsedSeconds.toFixed(1)} s</strong><br>
@@ -225,6 +242,12 @@ function resetSessionData() {
   updateLiveData()
 }
 
+function resetCalibrationData() {
+  calibrationDetectedSteps = 0
+  lastDetectedStepTime = 0
+  updateCalibrationBox()
+}
+
 function playBeep() {
   if (!audioContext) return
 
@@ -243,7 +266,7 @@ function playBeep() {
   gainNode.gain.setValueAtTime(0.0001, now)
   gainNode.gain.exponentialRampToValueAtTime(0.45, now + 0.01)
   gainNode.gain.exponentialRampToValueAtTime(0.22, now + 0.07)
-  gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.20)
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.2)
 
   oscillator1.connect(gainNode)
   oscillator2.connect(gainNode)
@@ -251,8 +274,8 @@ function playBeep() {
 
   oscillator1.start(now)
   oscillator2.start(now)
-  oscillator1.stop(now + 0.20)
-  oscillator2.stop(now + 0.20)
+  oscillator1.stop(now + 0.2)
+  oscillator2.stop(now + 0.2)
 }
 
 function getGpsSnapshot() {
@@ -339,15 +362,17 @@ function handleMotionEvent(event) {
 
   motionMagnitude = Math.sqrt(x * x + y * y + z * z)
 
-  if (!sessionRunning) {
-    updateLiveData()
-    return
-  }
-
   const now = Date.now()
   const enoughTimePassed = now - lastDetectedStepTime > refractoryMs
+  const isPeak = motionMagnitude > peakThreshold && enoughTimePassed
 
-  if (motionMagnitude > peakThreshold && enoughTimePassed) {
+  if (calibrationRunning && isPeak) {
+    lastDetectedStepTime = now
+    calibrationDetectedSteps += 1
+    updateCalibrationBox()
+  }
+
+  if (sessionRunning && isPeak) {
     lastDetectedStepTime = now
     registerDetectedStep(now)
   }
@@ -462,8 +487,24 @@ function stopGpsWatch() {
   }
 }
 
+function startCalibration() {
+  if (!motionEnabled || sessionRunning) return
+  calibrationRunning = true
+  resetCalibrationData()
+  updateCalibrationBox()
+}
+
+function resetCalibration() {
+  calibrationRunning = false
+  resetCalibrationData()
+  updateCalibrationBox()
+}
+
 async function startSession() {
   if (!intervalMs || !motionEnabled || sessionRunning) return
+
+  calibrationRunning = false
+  updateCalibrationBox()
 
   clearSessionTimers()
   resetSessionData()
@@ -591,10 +632,13 @@ calculateBtn.addEventListener('click', () => {
 sensitivitySlider.addEventListener('input', updateSensitivity)
 enableMotionBtn.addEventListener('click', enableMotion)
 enableGpsBtn.addEventListener('click', enableGps)
+startCalibrationBtn.addEventListener('click', startCalibration)
+resetCalibrationBtn.addEventListener('click', resetCalibration)
 startSessionBtn.addEventListener('click', startSession)
 stopSessionBtn.addEventListener('click', stopSession)
 exportCsvBtn.addEventListener('click', exportCsv)
 
 updateSensitivity()
+updateCalibrationBox()
 updateStatusBox()
 updateLiveData()
