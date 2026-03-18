@@ -138,21 +138,31 @@ function resetSessionData() {
 function playBeep() {
   if (!audioContext) return
 
-  const oscillator = audioContext.createOscillator()
+  const now = audioContext.currentTime
+
+  const oscillator1 = audioContext.createOscillator()
+  const oscillator2 = audioContext.createOscillator()
   const gainNode = audioContext.createGain()
 
-  oscillator.type = 'sine'
-  oscillator.frequency.value = 880
+  oscillator1.type = 'square'
+  oscillator1.frequency.setValueAtTime(1200, now)
 
-  gainNode.gain.setValueAtTime(0.0001, audioContext.currentTime)
-  gainNode.gain.exponentialRampToValueAtTime(0.15, audioContext.currentTime + 0.01)
-  gainNode.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.08)
+  oscillator2.type = 'triangle'
+  oscillator2.frequency.setValueAtTime(880, now)
 
-  oscillator.connect(gainNode)
+  gainNode.gain.setValueAtTime(0.0001, now)
+  gainNode.gain.exponentialRampToValueAtTime(0.35, now + 0.01)
+  gainNode.gain.exponentialRampToValueAtTime(0.18, now + 0.06)
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.18)
+
+  oscillator1.connect(gainNode)
+  oscillator2.connect(gainNode)
   gainNode.connect(audioContext.destination)
 
-  oscillator.start()
-  oscillator.stop(audioContext.currentTime + 0.08)
+  oscillator1.start(now)
+  oscillator2.start(now)
+  oscillator1.stop(now + 0.18)
+  oscillator2.stop(now + 0.18)
 }
 
 function getGpsSnapshot() {
@@ -178,7 +188,6 @@ function pushTheoreticalStep(ts) {
     matched: false,
   })
 
-  playBeep()
   updateLiveData()
 }
 
@@ -354,19 +363,23 @@ function startSession() {
       await audioContext.resume()
     }
 
-    pushTheoreticalStep(startTime)
+    playBeep()
 
-    cueTimer = setInterval(() => {
-      pushTheoreticalStep(Date.now())
-    }, intervalMs)
+    setTimeout(() => {
+      pushTheoreticalStep(startTime)
 
-    liveTimer = setInterval(() => {
-      updateLiveData()
-    }, 100)
+      cueTimer = setInterval(() => {
+        playBeep()
+        pushTheoreticalStep(Date.now())
+      }, intervalMs)
+
+      liveTimer = setInterval(() => {
+        updateLiveData()
+      }, 100)
+    }, 120)
   }
 
   startAudio()
-
   startGpsWatch()
 
   startSessionBtn.disabled = true
