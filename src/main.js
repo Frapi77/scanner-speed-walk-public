@@ -15,6 +15,22 @@ document.querySelector('#app').innerHTML = `
         placeholder="e.g. 70"
       />
 
+      <label for="sensitivitySlider" style="margin-top: 16px;">Detection sensitivity</label>
+      <input
+        id="sensitivitySlider"
+        type="range"
+        min="1"
+        max="10"
+        step="1"
+        value="4"
+      />
+      <div id="sensitivityInfo" class="result">
+        Sensitivity: <strong>4</strong><br>
+        Lower = stricter, higher = more reactive<br>
+        Threshold: <strong>3.53</strong><br>
+        Refractory window: <strong>911 ms</strong>
+      </div>
+
       <div class="buttonRow">
         <button id="calculateBtn">Calculate interval</button>
         <button id="enableMotionBtn">Enable motion</button>
@@ -54,6 +70,8 @@ const SCANNER_SPEED_M_PER_HOUR = 882
 const SCANNER_SPEED_M_PER_SECOND = SCANNER_SPEED_M_PER_HOUR / 3600
 
 const stepLengthInput = document.querySelector('#stepLength')
+const sensitivitySlider = document.querySelector('#sensitivitySlider')
+const sensitivityInfo = document.querySelector('#sensitivityInfo')
 const calculateBtn = document.querySelector('#calculateBtn')
 const enableMotionBtn = document.querySelector('#enableMotionBtn')
 const enableGpsBtn = document.querySelector('#enableGpsBtn')
@@ -89,13 +107,59 @@ let latestGps = null
 let gpsPointCount = 0
 
 let lastDetectedStepTime = 0
-let peakThreshold = 2.2
-let refractoryMs = 700
+let sensitivity = 4
+let peakThreshold = 3.53
+let refractoryMs = 911
 
 const theoreticalSteps = []
 const detectedSteps = []
 const matchedRows = []
 const gpsTrack = []
+
+function mapSensitivity(value) {
+  const v = Number(value)
+
+  // 1 = very strict, 10 = very reactive
+  // threshold goes down as sensitivity rises
+  // refractory goes down as sensitivity rises
+  const threshold = 4.6 - ((v - 1) / 9) * 3.2   // ~4.6 -> 1.4
+  const refractory = Math.round(1150 - ((v - 1) / 9) * 700) // 1150 -> 450
+
+  return {
+    threshold,
+    refractory,
+  }
+}
+
+function updateSensitivity() {
+  sensitivity = Number(sensitivitySlider.value)
+  const mapped = mapSensitivity(sensitivity)
+  peakThreshold = mapped.threshold
+  refractoryMs = mapped.refractory
+
+  sensitivityInfo.innerHTML = `
+    Sensitivity: <strong>${sensitivity}</strong><br>
+    Lower = stricter, higher = more reactive<br>
+    Threshold: <strong>${peakThreshold.toFixed(2)}</strong><br>
+    Refractory window: <strong>${refractoryMs} ms</strong>
+  `
+
+  if (intervalSeconds) {
+    const stepLengthCm = Number(stepLengthInput.value)
+    if (stepLengthCm > 0) {
+      const stepsPerMinute = 60 / intervalSeconds
+      result.innerHTML = `
+        Scanner speed: <strong>882 m/h</strong><br>
+        Step length: <strong>${stepLengthCm.toFixed(1)} cm</strong><br>
+        Step interval: <strong>${intervalSeconds.toFixed(2)} s</strong><br>
+        Steps per minute: <strong>${stepsPerMinute.toFixed(2)}</strong><br>
+        Detection sensitivity: <strong>${sensitivity}</strong><br>
+        Threshold: <strong>${peakThreshold.toFixed(2)}</strong><br>
+        Refractory window: <strong>${refractoryMs} ms</strong>
+      `
+    }
+  }
+}
 
 function updateStatusBox() {
   let gpsText = 'not enabled'
@@ -342,7 +406,7 @@ function enableGps() {
       gpsEnabled = false
       gpsDenied = true
       updateStatusBox()
-      alert('GPS denied or unavailable. Enable location permission for this site in Safari settings and try again.')
+      alert('GPS denied or unavailable. Enable location permission for this site in browser settings and try again.')
     },
     {
       enableHighAccuracy: true,
@@ -516,18 +580,21 @@ calculateBtn.addEventListener('click', () => {
     Step length: <strong>${stepLengthCm.toFixed(1)} cm</strong><br>
     Step interval: <strong>${intervalSeconds.toFixed(2)} s</strong><br>
     Steps per minute: <strong>${stepsPerMinute.toFixed(2)}</strong><br>
-    Peak threshold: <strong>${peakThreshold.toFixed(2)}</strong><br>
+    Detection sensitivity: <strong>${sensitivity}</strong><br>
+    Threshold: <strong>${peakThreshold.toFixed(2)}</strong><br>
     Refractory window: <strong>${refractoryMs} ms</strong>
   `
 
   maybeEnableStart()
 })
 
+sensitivitySlider.addEventListener('input', updateSensitivity)
 enableMotionBtn.addEventListener('click', enableMotion)
 enableGpsBtn.addEventListener('click', enableGps)
 startSessionBtn.addEventListener('click', startSession)
 stopSessionBtn.addEventListener('click', stopSession)
 exportCsvBtn.addEventListener('click', exportCsv)
 
+updateSensitivity()
 updateStatusBox()
 updateLiveData()
