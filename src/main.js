@@ -66,12 +66,15 @@ const liveData = document.querySelector('#liveData')
 
 let intervalSeconds = null
 let intervalMs = null
+
 let cueTimer = null
 let liveTimer = null
+let initialCueTimeout = null
 let audioContext = null
 
 let motionEnabled = false
 let gpsEnabled = false
+let gpsDenied = false
 let sessionRunning = false
 
 let startTime = null
@@ -86,8 +89,8 @@ let latestGps = null
 let gpsPointCount = 0
 
 let lastDetectedStepTime = 0
-let peakThreshold = 1.2
-let refractoryMs = 450
+let peakThreshold = 2.2
+let refractoryMs = 700
 
 const theoreticalSteps = []
 const detectedSteps = []
@@ -95,15 +98,21 @@ const matchedRows = []
 const gpsTrack = []
 
 function updateStatusBox() {
+  let gpsText = 'not enabled'
+  if (gpsDenied) gpsText = 'denied'
+  else if (gpsEnabled) gpsText = 'enabled'
+
   statusBox.innerHTML = `
     Motion: <strong>${motionEnabled ? 'enabled' : 'not enabled'}</strong><br>
-    GPS: <strong>${gpsEnabled ? 'enabled' : 'not enabled'}</strong><br>
+    GPS: <strong>${gpsText}</strong><br>
     Session: <strong>${sessionRunning ? 'running' : 'stopped'}</strong>
   `
 }
 
 function updateLiveData() {
-  const elapsedSeconds = startTime ? (Date.now() - startTime) / 1000 : 0
+  const elapsedSeconds = startTime && sessionRunning
+    ? (Date.now() - startTime) / 1000
+    : 0
 
   liveData.innerHTML = `
     Elapsed time: <strong>${elapsedSeconds.toFixed(1)} s</strong><br>
@@ -114,6 +123,23 @@ function updateLiveData() {
     Motion magnitude: <strong>${motionMagnitude.toFixed(3)}</strong><br>
     GPS points: <strong>${gpsPointCount}</strong>
   `
+}
+
+function clearSessionTimers() {
+  if (cueTimer) {
+    clearInterval(cueTimer)
+    cueTimer = null
+  }
+
+  if (liveTimer) {
+    clearInterval(liveTimer)
+    liveTimer = null
+  }
+
+  if (initialCueTimeout) {
+    clearTimeout(initialCueTimeout)
+    initialCueTimeout = null
+  }
 }
 
 function resetSessionData() {
@@ -145,15 +171,15 @@ function playBeep() {
   const gainNode = audioContext.createGain()
 
   oscillator1.type = 'square'
-  oscillator1.frequency.setValueAtTime(1200, now)
+  oscillator1.frequency.setValueAtTime(1400, now)
 
   oscillator2.type = 'triangle'
-  oscillator2.frequency.setValueAtTime(880, now)
+  oscillator2.frequency.setValueAtTime(950, now)
 
   gainNode.gain.setValueAtTime(0.0001, now)
-  gainNode.gain.exponentialRampToValueAtTime(0.35, now + 0.01)
-  gainNode.gain.exponentialRampToValueAtTime(0.18, now + 0.06)
-  gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.18)
+  gainNode.gain.exponentialRampToValueAtTime(0.45, now + 0.01)
+  gainNode.gain.exponentialRampToValueAtTime(0.22, now + 0.07)
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.20)
 
   oscillator1.connect(gainNode)
   oscillator2.connect(gainNode)
@@ -161,8 +187,8 @@ function playBeep() {
 
   oscillator1.start(now)
   oscillator2.start(now)
-  oscillator1.stop(now + 0.18)
-  oscillator2.stop(now + 0.18)
+  oscillator1.stop(now + 0.20)
+  oscillator2.stop(now + 0.20)
 }
 
 function getGpsSnapshot() {
@@ -296,9 +322,34 @@ function enableGps() {
     return
   }
 
-  gpsEnabled = true
-  updateStatusBox()
-  maybeEnableStart()
+  gpsDenied = false
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      latestGps = {
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+        acc: position.coords.accuracy,
+        timestamp: position.timestamp,
+      }
+
+      gpsEnabled = true
+      updateStatusBox()
+      maybeEnableStart()
+    },
+    (error) => {
+      console.error(error)
+      gpsEnabled = false
+      gpsDenied = true
+      updateStatusBox()
+      alert('GPS denied or unavailable. Enable location permission for this site in Safari settings and try again.')
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: 10000,
+    }
+  )
 }
 
 function maybeEnableStart() {
@@ -310,10 +361,7 @@ function maybeEnableStart() {
 function startGpsWatch() {
   if (!gpsEnabled || !navigator.geolocation) return
 
-  if (gpsWatchId !== null) {
-    navigator.geolocation.clearWatch(gpsWatchId)
-    gpsWatchId = null
-  }
+  stopGpsWatch()
 
   gpsWatchId = navigator.geolocation.watchPosition(
     (position) => {
@@ -330,7 +378,10 @@ function startGpsWatch() {
     },
     (error) => {
       console.error(error)
-      alert('GPS error: ' + error.message)
+      gpsEnabled = false
+      gpsDenied = true
+      stopGpsWatch()
+      updateStatusBox()
     },
     {
       enableHighAccuracy: true,
@@ -347,10 +398,12 @@ function stopGpsWatch() {
   }
 }
 
-function startSession() {
-  if (!intervalMs || !motionEnabled) return
+async function startSession() {
+  if (!intervalMs || !motionEnabled || sessionRunning) return
 
+  clearSessionTimers()
   resetSessionData()
+
   sessionRunning = true
   startTime = Date.now()
 
@@ -358,54 +411,50 @@ function startSession() {
     audioContext = new window.AudioContext()
   }
 
-  const startAudio = async () => {
-    if (audioContext.state === 'suspended') {
-      await audioContext.resume()
-    }
-
-    playBeep()
-
-    setTimeout(() => {
-      pushTheoreticalStep(startTime)
-
-      cueTimer = setInterval(() => {
-        playBeep()
-        pushTheoreticalStep(Date.now())
-      }, intervalMs)
-
-      liveTimer = setInterval(() => {
-        updateLiveData()
-      }, 100)
-    }, 120)
+  if (audioContext.state === 'suspended') {
+    await audioContext.resume()
   }
 
-  startAudio()
+  playBeep()
+
+  initialCueTimeout = setTimeout(() => {
+    if (!sessionRunning) return
+
+    pushTheoreticalStep(startTime)
+
+    cueTimer = setInterval(() => {
+      if (!sessionRunning) return
+      playBeep()
+      pushTheoreticalStep(Date.now())
+    }, intervalMs)
+
+    liveTimer = setInterval(() => {
+      updateLiveData()
+    }, 100)
+  }, 120)
+
   startGpsWatch()
 
   startSessionBtn.disabled = true
   stopSessionBtn.disabled = false
   exportCsvBtn.disabled = true
   updateStatusBox()
+  updateLiveData()
 }
 
 function stopSession() {
   sessionRunning = false
-
-  if (cueTimer) {
-    clearInterval(cueTimer)
-    cueTimer = null
-  }
-
-  if (liveTimer) {
-    clearInterval(liveTimer)
-    liveTimer = null
-  }
-
+  clearSessionTimers()
   stopGpsWatch()
+
+  startTime = null
+  currentMisalignmentMs = 0
+  motionMagnitude = 0
 
   startSessionBtn.disabled = false
   stopSessionBtn.disabled = true
   exportCsvBtn.disabled = matchedRows.length === 0
+
   updateStatusBox()
   updateLiveData()
 }
