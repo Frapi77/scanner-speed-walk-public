@@ -22,14 +22,14 @@ document.querySelector('#app').innerHTML = `
         min="1"
         max="10"
         step="1"
-        value="3"
+        value="5"
       />
 
       <div id="sensitivityInfo" class="result">
-        Sensitivity: <strong>3</strong><br>
+        Sensitivity: <strong>5</strong><br>
         Lower = stricter, higher = more reactive<br>
-        Threshold: <strong>4.11</strong><br>
-        Refractory window: <strong>994 ms</strong>
+        Threshold: <strong>3.07</strong><br>
+        Refractory window: <strong>861 ms</strong>
       </div>
 
       <div class="buttonRow">
@@ -127,11 +127,11 @@ let lastDetectedStepTime = 0
 let previousMotionMagnitude = 0
 let smoothedMagnitude = 0
 
-let sensitivity = 3
-let peakThreshold = 4.11
-let refractoryMs = 994
+let sensitivity = 5
+let peakThreshold = 3.07
+let refractoryMs = 861
 
-const SMOOTHING_ALPHA = 0.22
+const SMOOTHING_ALPHA = 0.32
 
 const theoreticalSteps = []
 const detectedSteps = []
@@ -140,8 +140,8 @@ const gpsTrack = []
 
 function mapSensitivity(value) {
   const v = Number(value)
-  const threshold = 4.8 - ((v - 1) / 9) * 3.3
-  const refractory = Math.round(1150 - ((v - 1) / 9) * 650)
+  const threshold = 4.4 - ((v - 1) / 9) * 3.0
+  const refractory = Math.round(1100 - ((v - 1) / 9) * 550)
   return { threshold, refractory }
 }
 
