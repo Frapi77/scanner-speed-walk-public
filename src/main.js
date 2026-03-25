@@ -22,14 +22,14 @@ document.querySelector('#app').innerHTML = `
         min="1"
         max="10"
         step="1"
-        value="5"
+        value="6"
       />
 
       <div id="sensitivityInfo" class="result">
-        Sensitivity: <strong>5</strong><br>
+        Sensitivity: <strong>6</strong><br>
         Lower = stricter, higher = more reactive<br>
-        Threshold: <strong>3.07</strong><br>
-        Refractory window: <strong>861 ms</strong>
+        Threshold: <strong>0.98</strong><br>
+        Refractory window: <strong>783 ms</strong>
       </div>
 
       <div class="buttonRow">
@@ -46,6 +46,7 @@ document.querySelector('#app').innerHTML = `
       <div id="calibrationBox" class="result">
         Calibration: <strong>off</strong><br>
         Calibration detected steps: <strong>0</strong><br>
+        Motion source: <strong>none</strong><br>
         Walk a few steps and adjust sensitivity until one bodily step gives one count.
       </div>
 
@@ -71,7 +72,7 @@ document.querySelector('#app').innerHTML = `
         Detected steps: <strong>0</strong><br>
         Current MI: <strong>0 ms</strong><br>
         Cumulative drift: <strong>0 ms</strong><br>
-        Motion magnitude: <strong>0.000</strong><br>
+        Motion signal: <strong>0.000</strong><br>
         GPS points: <strong>0</strong>
       </div>
     </section>
@@ -117,21 +118,25 @@ let detectedStepCount = 0
 let calibrationDetectedSteps = 0
 let currentMisalignmentMs = 0
 let cumulativeDriftMs = 0
-let motionMagnitude = 0
+let motionSignal = 0
 
 let gpsWatchId = null
 let latestGps = null
 let gpsPointCount = 0
 
 let lastDetectedStepTime = 0
-let previousMotionMagnitude = 0
-let smoothedMagnitude = 0
+let previousSignal = 0
+let smoothedSignal = 0
+let gravityBaseline = 9.81
 
-let sensitivity = 5
-let peakThreshold = 3.07
-let refractoryMs = 861
+let sensitivity = 6
+let peakThreshold = 0.98
+let refractoryMs = 783
 
-const SMOOTHING_ALPHA = 0.32
+let motionSource = 'none'
+
+const SIGNAL_SMOOTHING_ALPHA = 0.35
+const BASELINE_ALPHA = 0.03
 
 const theoreticalSteps = []
 const detectedSteps = []
@@ -140,8 +145,8 @@ const gpsTrack = []
 
 function mapSensitivity(value) {
   const v = Number(value)
-  const threshold = 4.4 - ((v - 1) / 9) * 3.0
-  const refractory = Math.round(1100 - ((v - 1) / 9) * 550)
+  const threshold = 1.8 - ((v - 1) / 9) * 1.45   // ~1.8 -> 0.35
+  const refractory = Math.round(1150 - ((v - 1) / 9) * 650) // 1150 -> 500
   return { threshold, refractory }
 }
 
@@ -179,6 +184,7 @@ function updateCalibrationBox() {
   calibrationBox.innerHTML = `
     Calibration: <strong>${calibrationRunning ? 'on' : 'off'}</strong><br>
     Calibration detected steps: <strong>${calibrationDetectedSteps}</strong><br>
+    Motion source: <strong>${motionSource}</strong><br>
     Walk a few steps and adjust sensitivity until one bodily step gives one count.
   `
 }
@@ -205,7 +211,7 @@ function updateLiveData() {
     Detected steps: <strong>${detectedStepCount}</strong><br>
     Current MI: <strong>${Math.round(currentMisalignmentMs)} ms</strong><br>
     Cumulative drift: <strong>${Math.round(cumulativeDriftMs)} ms</strong><br>
-    Motion magnitude: <strong>${motionMagnitude.toFixed(3)}</strong><br>
+    Motion signal: <strong>${motionSignal.toFixed(3)}</strong><br>
     GPS points: <strong>${gpsPointCount}</strong>
   `
 }
@@ -227,18 +233,24 @@ function clearSessionTimers() {
   }
 }
 
+function resetSignalState() {
+  lastDetectedStepTime = 0
+  previousSignal = 0
+  smoothedSignal = 0
+  gravityBaseline = 9.81
+  motionSignal = 0
+}
+
 function resetSessionData() {
   startTime = null
   theoreticalStepCount = 0
   detectedStepCount = 0
   currentMisalignmentMs = 0
   cumulativeDriftMs = 0
-  motionMagnitude = 0
   gpsPointCount = 0
   latestGps = null
-  lastDetectedStepTime = 0
-  previousMotionMagnitude = 0
-  smoothedMagnitude = 0
+
+  resetSignalState()
 
   theoreticalSteps.length = 0
   detectedSteps.length = 0
@@ -250,10 +262,7 @@ function resetSessionData() {
 
 function resetCalibrationData() {
   calibrationDetectedSteps = 0
-  lastDetectedStepTime = 0
-  previousMotionMagnitude = 0
-  smoothedMagnitude = 0
-  motionMagnitude = 0
+  resetSignalState()
   updateCalibrationBox()
   updateLiveData()
 }
@@ -362,25 +371,49 @@ function registerDetectedStep(ds) {
   updateLiveData()
 }
 
+function getMotionValue(event) {
+  const acc = event.acceleration
+
+  if (acc && acc.x != null && acc.y != null && acc.z != null) {
+    motionSource = 'acceleration'
+    const x = acc.x ?? 0
+    const y = acc.y ?? 0
+    const z = acc.z ?? 0
+    return Math.sqrt(x * x + y * y + z * z)
+  }
+
+  const accG = event.accelerationIncludingGravity
+  if (accG && accG.x != null && accG.y != null && accG.z != null) {
+    motionSource = 'accelerationIncludingGravity'
+    const x = accG.x ?? 0
+    const y = accG.y ?? 0
+    const z = accG.z ?? 0
+    const magnitude = Math.sqrt(x * x + y * y + z * z)
+
+    gravityBaseline =
+      BASELINE_ALPHA * magnitude + (1 - BASELINE_ALPHA) * gravityBaseline
+
+    return Math.abs(magnitude - gravityBaseline)
+  }
+
+  motionSource = 'none'
+  return null
+}
+
 function handleMotionEvent(event) {
-  const acc = event.accelerationIncludingGravity || event.acceleration
-  if (!acc) return
+  const rawValue = getMotionValue(event)
+  if (rawValue == null) return
 
-  const x = acc.x ?? 0
-  const y = acc.y ?? 0
-  const z = acc.z ?? 0
+  smoothedSignal =
+    SIGNAL_SMOOTHING_ALPHA * rawValue +
+    (1 - SIGNAL_SMOOTHING_ALPHA) * smoothedSignal
 
-  const rawMagnitude = Math.sqrt(x * x + y * y + z * z)
-
-  smoothedMagnitude =
-    SMOOTHING_ALPHA * rawMagnitude + (1 - SMOOTHING_ALPHA) * smoothedMagnitude
-
-  motionMagnitude = smoothedMagnitude
+  motionSignal = smoothedSignal
 
   const now = Date.now()
   const enoughTimePassed = now - lastDetectedStepTime > refractoryMs
   const crossedUp =
-    previousMotionMagnitude <= peakThreshold && motionMagnitude > peakThreshold
+    previousSignal <= peakThreshold && motionSignal > peakThreshold
 
   if (calibrationRunning && crossedUp && enoughTimePassed) {
     lastDetectedStepTime = now
@@ -393,7 +426,8 @@ function handleMotionEvent(event) {
     registerDetectedStep(now)
   }
 
-  previousMotionMagnitude = motionMagnitude
+  previousSignal = motionSignal
+  updateCalibrationBox()
   updateLiveData()
 }
 
@@ -571,7 +605,7 @@ function stopSession() {
 
   startTime = null
   currentMisalignmentMs = 0
-  motionMagnitude = 0
+  motionSignal = 0
 
   startSessionBtn.disabled = false
   stopSessionBtn.disabled = true
