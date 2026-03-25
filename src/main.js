@@ -3,7 +3,7 @@ import './style.css'
 document.querySelector('#app').innerHTML = `
   <main class="container">
     <h1>Scanner Speed Walk</h1>
-    <p class="subtitle">Performative walk at 882 m/h</p>
+    <p class="subtitle">Performative walk at 1008 m/h</p>
 
     <section class="card">
       <label for="stepLength">Step length (cm)</label>
@@ -53,7 +53,12 @@ document.querySelector('#app').innerHTML = `
       <div class="buttonRow" style="margin-top: 10px;">
         <button id="startSessionBtn" disabled>Start session</button>
         <button id="stopSessionBtn" disabled>Stop session</button>
-        <button id="exportCsvBtn" disabled>Export CSV</button>
+      </div>
+
+      <div class="buttonRow" style="margin-top: 10px;">
+        <button id="exportStepCsvBtn" disabled>Export step CSV</button>
+        <button id="exportSummaryCsvBtn" disabled>Export summary CSV</button>
+        <button id="exportMapBtn" disabled>Export map HTML</button>
       </div>
 
       <div id="result" class="result">
@@ -70,16 +75,17 @@ document.querySelector('#app').innerHTML = `
         Elapsed time: <strong>0.0 s</strong><br>
         Theoretical steps: <strong>0</strong><br>
         Detected steps: <strong>0</strong><br>
-        Current MI: <strong>0 ms</strong><br>
+        Current misalignment: <strong>0 ms</strong><br>
         Cumulative drift: <strong>0 ms</strong><br>
         Motion signal: <strong>0.000</strong><br>
-        GPS points: <strong>0</strong>
+        GPS points: <strong>0</strong><br>
+        Total distance: <strong>0.00 m</strong>
       </div>
     </section>
   </main>
 `
 
-const SCANNER_SPEED_M_PER_HOUR = 882
+const SCANNER_SPEED_M_PER_HOUR = 1008
 const SCANNER_SPEED_M_PER_SECOND = SCANNER_SPEED_M_PER_HOUR / 3600
 
 const stepLengthInput = document.querySelector('#stepLength')
@@ -93,13 +99,16 @@ const resetCalibrationBtn = document.querySelector('#resetCalibrationBtn')
 const calibrationBox = document.querySelector('#calibrationBox')
 const startSessionBtn = document.querySelector('#startSessionBtn')
 const stopSessionBtn = document.querySelector('#stopSessionBtn')
-const exportCsvBtn = document.querySelector('#exportCsvBtn')
+const exportStepCsvBtn = document.querySelector('#exportStepCsvBtn')
+const exportSummaryCsvBtn = document.querySelector('#exportSummaryCsvBtn')
+const exportMapBtn = document.querySelector('#exportMapBtn')
 const result = document.querySelector('#result')
 const statusBox = document.querySelector('#statusBox')
 const liveData = document.querySelector('#liveData')
 
 let intervalSeconds = null
 let intervalMs = null
+let currentStepLengthCm = null
 
 let cueTimer = null
 let liveTimer = null
@@ -113,12 +122,14 @@ let sessionRunning = false
 let calibrationRunning = false
 
 let startTime = null
+let stopTime = null
 let theoreticalStepCount = 0
 let detectedStepCount = 0
 let calibrationDetectedSteps = 0
 let currentMisalignmentMs = 0
 let cumulativeDriftMs = 0
 let motionSignal = 0
+let totalDistanceM = 0
 
 let gpsWatchId = null
 let latestGps = null
@@ -145,8 +156,8 @@ const gpsTrack = []
 
 function mapSensitivity(value) {
   const v = Number(value)
-  const threshold = 1.8 - ((v - 1) / 9) * 1.45   // ~1.8 -> 0.35
-  const refractory = Math.round(1150 - ((v - 1) / 9) * 650) // 1150 -> 500
+  const threshold = 1.8 - ((v - 1) / 9) * 1.45
+  const refractory = Math.round(1150 - ((v - 1) / 9) * 650)
   return { threshold, refractory }
 }
 
@@ -163,20 +174,17 @@ function updateSensitivity() {
     Refractory window: <strong>${refractoryMs} ms</strong>
   `
 
-  if (intervalSeconds) {
-    const stepLengthCm = Number(stepLengthInput.value)
-    if (stepLengthCm > 0) {
-      const stepsPerMinute = 60 / intervalSeconds
-      result.innerHTML = `
-        Scanner speed: <strong>882 m/h</strong><br>
-        Step length: <strong>${stepLengthCm.toFixed(1)} cm</strong><br>
-        Step interval: <strong>${intervalSeconds.toFixed(2)} s</strong><br>
-        Steps per minute: <strong>${stepsPerMinute.toFixed(2)}</strong><br>
-        Detection sensitivity: <strong>${sensitivity}</strong><br>
-        Threshold: <strong>${peakThreshold.toFixed(2)}</strong><br>
-        Refractory window: <strong>${refractoryMs} ms</strong>
-      `
-    }
+  if (intervalSeconds && currentStepLengthCm) {
+    const stepsPerMinute = 60 / intervalSeconds
+    result.innerHTML = `
+      Scanner speed: <strong>${SCANNER_SPEED_M_PER_HOUR} m/h</strong><br>
+      Step length: <strong>${currentStepLengthCm.toFixed(1)} cm</strong><br>
+      Step interval: <strong>${intervalSeconds.toFixed(2)} s</strong><br>
+      Steps per minute: <strong>${stepsPerMinute.toFixed(2)}</strong><br>
+      Detection sensitivity: <strong>${sensitivity}</strong><br>
+      Threshold: <strong>${peakThreshold.toFixed(2)}</strong><br>
+      Refractory window: <strong>${refractoryMs} ms</strong>
+    `
   }
 }
 
@@ -201,18 +209,25 @@ function updateStatusBox() {
   `
 }
 
+function getElapsedTimeMs() {
+  if (sessionRunning && startTime) return Date.now() - startTime
+  if (!sessionRunning && startTime && stopTime) return stopTime - startTime
+  return 0
+}
+
 function updateLiveData() {
-  const elapsedSeconds =
-    startTime && sessionRunning ? (Date.now() - startTime) / 1000 : 0
+  const elapsedMs = getElapsedTimeMs()
+  const elapsedSeconds = elapsedMs / 1000
 
   liveData.innerHTML = `
     Elapsed time: <strong>${elapsedSeconds.toFixed(1)} s</strong><br>
     Theoretical steps: <strong>${theoreticalStepCount}</strong><br>
     Detected steps: <strong>${detectedStepCount}</strong><br>
-    Current MI: <strong>${Math.round(currentMisalignmentMs)} ms</strong><br>
+    Current misalignment: <strong>${Math.round(currentMisalignmentMs)} ms</strong><br>
     Cumulative drift: <strong>${Math.round(cumulativeDriftMs)} ms</strong><br>
     Motion signal: <strong>${motionSignal.toFixed(3)}</strong><br>
-    GPS points: <strong>${gpsPointCount}</strong>
+    GPS points: <strong>${gpsPointCount}</strong><br>
+    Total distance: <strong>${totalDistanceM.toFixed(2)} m</strong>
   `
 }
 
@@ -221,12 +236,10 @@ function clearSessionTimers() {
     clearInterval(cueTimer)
     cueTimer = null
   }
-
   if (liveTimer) {
     clearInterval(liveTimer)
     liveTimer = null
   }
-
   if (initialCueTimeout) {
     clearTimeout(initialCueTimeout)
     initialCueTimeout = null
@@ -243,12 +256,14 @@ function resetSignalState() {
 
 function resetSessionData() {
   startTime = null
+  stopTime = null
   theoreticalStepCount = 0
   detectedStepCount = 0
   currentMisalignmentMs = 0
   cumulativeDriftMs = 0
   gpsPointCount = 0
   latestGps = null
+  totalDistanceM = 0
 
   resetSignalState()
 
@@ -271,7 +286,6 @@ function playBeep() {
   if (!audioContext) return
 
   const now = audioContext.currentTime
-
   const oscillator1 = audioContext.createOscillator()
   const oscillator2 = audioContext.createOscillator()
   const gainNode = audioContext.createGain()
@@ -300,37 +314,38 @@ function playBeep() {
 function getGpsSnapshot() {
   return latestGps
     ? {
-        lat: latestGps.lat,
-        lng: latestGps.lng,
-        acc: latestGps.acc,
+        latitude: latestGps.lat,
+        longitude: latestGps.lng,
+        accuracy: latestGps.acc,
       }
     : {
-        lat: '',
-        lng: '',
-        acc: '',
+        latitude: '',
+        longitude: '',
+        accuracy: '',
       }
 }
 
-function pushTheoreticalStep(ts) {
+function pushTheoreticalStep(tsAbsolute) {
   theoreticalStepCount += 1
 
   theoreticalSteps.push({
     index: theoreticalStepCount,
-    ts,
+    absoluteTimeMs: tsAbsolute,
+    relativeTimeMs: tsAbsolute - startTime,
     matched: false,
   })
 
   updateLiveData()
 }
 
-function findNearestUnmatchedTheoreticalStep(ds) {
+function findNearestUnmatchedTheoreticalStep(dsAbsolute) {
   let best = null
   let bestAbsDelta = Infinity
 
   for (const step of theoreticalSteps) {
     if (step.matched) continue
 
-    const delta = ds - step.ts
+    const delta = dsAbsolute - step.absoluteTimeMs
     const absDelta = Math.abs(delta)
 
     if (absDelta < bestAbsDelta) {
@@ -342,29 +357,32 @@ function findNearestUnmatchedTheoreticalStep(ds) {
   return best
 }
 
-function registerDetectedStep(ds) {
+function registerDetectedStep(dsAbsolute) {
   detectedStepCount += 1
-  detectedSteps.push({ ds })
+  detectedSteps.push({
+    absoluteTimeMs: dsAbsolute,
+    relativeTimeMs: dsAbsolute - startTime,
+  })
 
-  const nearest = findNearestUnmatchedTheoreticalStep(ds)
+  const nearest = findNearestUnmatchedTheoreticalStep(dsAbsolute)
 
   if (nearest) {
     nearest.matched = true
 
-    const mi = ds - nearest.ts
+    const mi = dsAbsolute - nearest.absoluteTimeMs
     cumulativeDriftMs += mi
     currentMisalignmentMs = mi
 
     const gps = getGpsSnapshot()
 
     matchedRows.push({
-      TS: nearest.ts,
-      DS: ds,
-      MI: mi,
-      GPS_LAT: gps.lat,
-      GPS_LNG: gps.lng,
-      GPS_ACC: gps.acc,
-      CD: cumulativeDriftMs,
+      theoretical_step_time_from_start_ms: nearest.relativeTimeMs,
+      detected_step_time_from_start_ms: dsAbsolute - startTime,
+      misalignment_ms: mi,
+      gps_latitude: gps.latitude,
+      gps_longitude: gps.longitude,
+      gps_accuracy_m: gps.accuracy,
+      cumulative_drift_ms: cumulativeDriftMs,
     })
   }
 
@@ -456,6 +474,50 @@ async function enableMotion() {
   }
 }
 
+function maybeEnableStart() {
+  if (intervalSeconds && motionEnabled) {
+    startSessionBtn.disabled = false
+  }
+}
+
+function haversineDistanceMeters(lat1, lon1, lat2, lon2) {
+  const toRad = (deg) => (deg * Math.PI) / 180
+  const R = 6371000
+
+  const dLat = toRad(lat2 - lat1)
+  const dLon = toRad(lon2 - lon1)
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2)
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  return R * c
+}
+
+function addGpsPoint(position) {
+  const point = {
+    lat: position.coords.latitude,
+    lng: position.coords.longitude,
+    acc: position.coords.accuracy,
+    absoluteTimeMs: position.timestamp,
+    relativeTimeMs: startTime ? position.timestamp - startTime : '',
+  }
+
+  if (gpsTrack.length > 0) {
+    const prev = gpsTrack[gpsTrack.length - 1]
+    totalDistanceM += haversineDistanceMeters(prev.lat, prev.lng, point.lat, point.lng)
+  }
+
+  latestGps = point
+  gpsTrack.push(point)
+  gpsPointCount = gpsTrack.length
+  updateLiveData()
+}
+
 function enableGps() {
   if (!navigator.geolocation) {
     alert('Geolocation is not supported on this device/browser.')
@@ -470,7 +532,8 @@ function enableGps() {
         lat: position.coords.latitude,
         lng: position.coords.longitude,
         acc: position.coords.accuracy,
-        timestamp: position.timestamp,
+        absoluteTimeMs: position.timestamp,
+        relativeTimeMs: '',
       }
 
       gpsEnabled = true
@@ -492,12 +555,6 @@ function enableGps() {
   )
 }
 
-function maybeEnableStart() {
-  if (intervalSeconds && motionEnabled) {
-    startSessionBtn.disabled = false
-  }
-}
-
 function startGpsWatch() {
   if (!gpsEnabled || !navigator.geolocation) return
 
@@ -505,16 +562,7 @@ function startGpsWatch() {
 
   gpsWatchId = navigator.geolocation.watchPosition(
     (position) => {
-      latestGps = {
-        lat: position.coords.latitude,
-        lng: position.coords.longitude,
-        acc: position.coords.accuracy,
-        timestamp: position.timestamp,
-      }
-
-      gpsTrack.push(latestGps)
-      gpsPointCount += 1
-      updateLiveData()
+      addGpsPoint(position)
     },
     (error) => {
       console.error(error)
@@ -562,6 +610,7 @@ async function startSession() {
 
   sessionRunning = true
   startTime = Date.now()
+  stopTime = null
 
   if (!audioContext) {
     audioContext = new window.AudioContext()
@@ -593,63 +642,246 @@ async function startSession() {
 
   startSessionBtn.disabled = true
   stopSessionBtn.disabled = false
-  exportCsvBtn.disabled = true
+  exportStepCsvBtn.disabled = true
+  exportSummaryCsvBtn.disabled = true
+  exportMapBtn.disabled = true
+
   updateStatusBox()
   updateLiveData()
 }
 
 function stopSession() {
   sessionRunning = false
+  stopTime = Date.now()
+
   clearSessionTimers()
   stopGpsWatch()
 
-  startTime = null
-  currentMisalignmentMs = 0
-  motionSignal = 0
-
   startSessionBtn.disabled = false
   stopSessionBtn.disabled = true
-  exportCsvBtn.disabled = matchedRows.length === 0
+
+  const hasAnyData = matchedRows.length > 0 || gpsTrack.length > 0 || theoreticalStepCount > 0
+  exportStepCsvBtn.disabled = matchedRows.length === 0
+  exportSummaryCsvBtn.disabled = !hasAnyData
+  exportMapBtn.disabled = gpsTrack.length === 0
 
   updateStatusBox()
   updateLiveData()
 }
 
-function exportCsv() {
+function downloadTextFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+function makeTimestampLabel() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+function exportStepCsv() {
   if (matchedRows.length === 0) {
     alert('No matched step data to export yet.')
     return
   }
 
-  const header = ['TS', 'DS', 'MI', 'GPS_LAT', 'GPS_LNG', 'GPS_ACC', 'CD']
+  const header = [
+    'theoretical_step_time_from_start_ms',
+    'detected_step_time_from_start_ms',
+    'misalignment_ms',
+    'gps_latitude',
+    'gps_longitude',
+    'gps_accuracy_m',
+    'cumulative_drift_ms',
+  ]
 
   const lines = [
     header.join(','),
     ...matchedRows.map((row) =>
       [
-        row.TS,
-        row.DS,
-        row.MI,
-        row.GPS_LAT,
-        row.GPS_LNG,
-        row.GPS_ACC,
-        row.CD,
+        row.theoretical_step_time_from_start_ms,
+        row.detected_step_time_from_start_ms,
+        row.misalignment_ms,
+        row.gps_latitude,
+        row.gps_longitude,
+        row.gps_accuracy_m,
+        row.cumulative_drift_ms,
       ].join(',')
     ),
   ]
 
-  const csvContent = lines.join('\n')
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  downloadTextFile(
+    `step_data_${makeTimestampLabel()}.csv`,
+    lines.join('\n'),
+    'text/csv;charset=utf-8;'
+  )
+}
 
-  a.href = url
-  a.download = `scanner-speed-walk-${timestamp}.csv`
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
+function exportSummaryCsv() {
+  const elapsedMs = getElapsedTimeMs()
+  const elapsedS = elapsedMs / 1000
+
+  const summary = [
+    ['metric', 'value'],
+    ['scanner_speed_m_per_hour', SCANNER_SPEED_M_PER_HOUR],
+    ['step_length_cm', currentStepLengthCm ?? ''],
+    ['detection_sensitivity', sensitivity],
+    ['detection_threshold', peakThreshold.toFixed(2)],
+    ['detection_refractory_window_ms', refractoryMs],
+    ['total_theoretical_steps', theoreticalStepCount],
+    ['total_detected_steps', detectedStepCount],
+    ['total_performance_time_ms', Math.round(elapsedMs)],
+    ['total_performance_time_s', elapsedS.toFixed(2)],
+    ['total_distance_m', totalDistanceM.toFixed(2)],
+    ['final_cumulative_drift_ms', Math.round(cumulativeDriftMs)],
+    ['gps_points_collected', gpsPointCount],
+    ['motion_source', motionSource],
+  ]
+
+  const csv = summary.map((row) => row.join(',')).join('\n')
+
+  downloadTextFile(
+    `performance_summary_${makeTimestampLabel()}.csv`,
+    csv,
+    'text/csv;charset=utf-8;'
+  )
+}
+
+function exportMapHtml() {
+  if (gpsTrack.length === 0) {
+    alert('No GPS track to export yet.')
+    return
+  }
+
+  const points = gpsTrack.map((p, index) => ({
+    lat: p.lat,
+    lng: p.lng,
+    acc: p.acc,
+    idx: index + 1,
+    relativeTimeMs: p.relativeTimeMs,
+  }))
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scanner-Speed Walk Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; font-family: Arial, sans-serif; }
+    #map { width: 100%; height: 100vh; }
+    .legend {
+      background: rgba(255,255,255,0.95);
+      padding: 10px 12px;
+      border-radius: 8px;
+      box-shadow: 0 1px 8px rgba(0,0,0,0.15);
+      line-height: 1.4;
+      font-size: 14px;
+    }
+    .legend .swatch {
+      display: inline-block;
+      width: 18px;
+      height: 3px;
+      vertical-align: middle;
+      margin-right: 6px;
+      background: #1d4ed8;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script>
+    const points = ${JSON.stringify(points)};
+    const map = L.map('map');
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const latlngs = points.map(p => [p.lat, p.lng]);
+    const line = L.polyline(latlngs, {
+      color: '#1d4ed8',
+      weight: 4,
+      opacity: 0.9
+    }).addTo(map);
+
+    const start = points[0];
+    const end = points[points.length - 1];
+
+    L.circleMarker([start.lat, start.lng], {
+      radius: 7,
+      color: '#15803d',
+      fillColor: '#22c55e',
+      fillOpacity: 0.95,
+      weight: 2
+    }).addTo(map).bindPopup('Start');
+
+    L.circleMarker([end.lat, end.lng], {
+      radius: 7,
+      color: '#991b1b',
+      fillColor: '#ef4444',
+      fillOpacity: 0.95,
+      weight: 2
+    }).addTo(map).bindPopup('End');
+
+    points.forEach(p => {
+      L.circleMarker([p.lat, p.lng], {
+        radius: 3,
+        color: '#111827',
+        fillColor: '#111827',
+        fillOpacity: 0.85,
+        weight: 1
+      }).addTo(map).bindPopup(
+        'Point ' + p.idx +
+        (p.relativeTimeMs !== '' ? '<br>Time from start: ' + p.relativeTimeMs + ' ms' : '') +
+        (p.acc != null ? '<br>GPS accuracy: ' + Number(p.acc).toFixed(1) + ' m' : '')
+      );
+
+      if (p.acc != null && p.acc > 0) {
+        L.circle([p.lat, p.lng], {
+          radius: p.acc,
+          color: '#6b7280',
+          weight: 1,
+          opacity: 0.25,
+          fillOpacity: 0.03
+        }).addTo(map);
+      }
+    });
+
+    map.fitBounds(line.getBounds(), { padding: [30, 30] });
+
+    const legend = L.control({ position: 'topright' });
+    legend.onAdd = function() {
+      const div = L.DomUtil.create('div', 'legend');
+      div.innerHTML = \`
+        <div><span class="swatch"></span> GPS trace</div>
+        <div><strong>Green</strong>: start</div>
+        <div><strong>Red</strong>: end</div>
+        <div style="margin-top: 6px; font-size: 12px;">
+          Accuracy circles are shown in meters when available.
+        </div>
+      \`;
+      return div;
+    };
+    legend.addTo(map);
+  </script>
+</body>
+</html>`
+
+  downloadTextFile(
+    `performance_map_${makeTimestampLabel()}.html`,
+    html,
+    'text/html;charset=utf-8;'
+  )
 }
 
 calculateBtn.addEventListener('click', () => {
@@ -662,13 +894,15 @@ calculateBtn.addEventListener('click', () => {
     return
   }
 
+  currentStepLengthCm = stepLengthCm
+
   const stepLengthM = stepLengthCm / 100
   intervalSeconds = stepLengthM / SCANNER_SPEED_M_PER_SECOND
   intervalMs = intervalSeconds * 1000
   const stepsPerMinute = 60 / intervalSeconds
 
   result.innerHTML = `
-    Scanner speed: <strong>882 m/h</strong><br>
+    Scanner speed: <strong>${SCANNER_SPEED_M_PER_HOUR} m/h</strong><br>
     Step length: <strong>${stepLengthCm.toFixed(1)} cm</strong><br>
     Step interval: <strong>${intervalSeconds.toFixed(2)} s</strong><br>
     Steps per minute: <strong>${stepsPerMinute.toFixed(2)}</strong><br>
@@ -687,7 +921,9 @@ startCalibrationBtn.addEventListener('click', startCalibration)
 resetCalibrationBtn.addEventListener('click', resetCalibration)
 startSessionBtn.addEventListener('click', startSession)
 stopSessionBtn.addEventListener('click', stopSession)
-exportCsvBtn.addEventListener('click', exportCsv)
+exportStepCsvBtn.addEventListener('click', exportStepCsv)
+exportSummaryCsvBtn.addEventListener('click', exportSummaryCsv)
+exportMapBtn.addEventListener('click', exportMapHtml)
 
 updateSensitivity()
 updateCalibrationBox()
