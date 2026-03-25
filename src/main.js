@@ -22,14 +22,14 @@ document.querySelector('#app').innerHTML = `
         min="1"
         max="10"
         step="1"
-        value="4"
+        value="3"
       />
 
       <div id="sensitivityInfo" class="result">
-        Sensitivity: <strong>4</strong><br>
+        Sensitivity: <strong>3</strong><br>
         Lower = stricter, higher = more reactive<br>
-        Threshold: <strong>3.53</strong><br>
-        Refractory window: <strong>911 ms</strong>
+        Threshold: <strong>4.11</strong><br>
+        Refractory window: <strong>994 ms</strong>
       </div>
 
       <div class="buttonRow">
@@ -124,9 +124,14 @@ let latestGps = null
 let gpsPointCount = 0
 
 let lastDetectedStepTime = 0
-let sensitivity = 4
-let peakThreshold = 3.53
-let refractoryMs = 911
+let previousMotionMagnitude = 0
+let smoothedMagnitude = 0
+
+let sensitivity = 3
+let peakThreshold = 4.11
+let refractoryMs = 994
+
+const SMOOTHING_ALPHA = 0.22
 
 const theoreticalSteps = []
 const detectedSteps = []
@@ -135,9 +140,8 @@ const gpsTrack = []
 
 function mapSensitivity(value) {
   const v = Number(value)
-  const threshold = 4.6 - ((v - 1) / 9) * 3.2
-  const refractory = Math.round(1150 - ((v - 1) / 9) * 700)
-
+  const threshold = 4.8 - ((v - 1) / 9) * 3.3
+  const refractory = Math.round(1150 - ((v - 1) / 9) * 650)
   return { threshold, refractory }
 }
 
@@ -233,6 +237,8 @@ function resetSessionData() {
   gpsPointCount = 0
   latestGps = null
   lastDetectedStepTime = 0
+  previousMotionMagnitude = 0
+  smoothedMagnitude = 0
 
   theoreticalSteps.length = 0
   detectedSteps.length = 0
@@ -245,7 +251,11 @@ function resetSessionData() {
 function resetCalibrationData() {
   calibrationDetectedSteps = 0
   lastDetectedStepTime = 0
+  previousMotionMagnitude = 0
+  smoothedMagnitude = 0
+  motionMagnitude = 0
   updateCalibrationBox()
+  updateLiveData()
 }
 
 function playBeep() {
@@ -266,7 +276,7 @@ function playBeep() {
   gainNode.gain.setValueAtTime(0.0001, now)
   gainNode.gain.exponentialRampToValueAtTime(0.45, now + 0.01)
   gainNode.gain.exponentialRampToValueAtTime(0.22, now + 0.07)
-  gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.2)
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.20)
 
   oscillator1.connect(gainNode)
   oscillator2.connect(gainNode)
@@ -274,8 +284,8 @@ function playBeep() {
 
   oscillator1.start(now)
   oscillator2.start(now)
-  oscillator1.stop(now + 0.2)
-  oscillator2.stop(now + 0.2)
+  oscillator1.stop(now + 0.20)
+  oscillator2.stop(now + 0.20)
 }
 
 function getGpsSnapshot() {
@@ -360,23 +370,30 @@ function handleMotionEvent(event) {
   const y = acc.y ?? 0
   const z = acc.z ?? 0
 
-  motionMagnitude = Math.sqrt(x * x + y * y + z * z)
+  const rawMagnitude = Math.sqrt(x * x + y * y + z * z)
+
+  smoothedMagnitude =
+    SMOOTHING_ALPHA * rawMagnitude + (1 - SMOOTHING_ALPHA) * smoothedMagnitude
+
+  motionMagnitude = smoothedMagnitude
 
   const now = Date.now()
   const enoughTimePassed = now - lastDetectedStepTime > refractoryMs
-  const isPeak = motionMagnitude > peakThreshold && enoughTimePassed
+  const crossedUp =
+    previousMotionMagnitude <= peakThreshold && motionMagnitude > peakThreshold
 
-  if (calibrationRunning && isPeak) {
+  if (calibrationRunning && crossedUp && enoughTimePassed) {
     lastDetectedStepTime = now
     calibrationDetectedSteps += 1
     updateCalibrationBox()
   }
 
-  if (sessionRunning && isPeak) {
+  if (sessionRunning && crossedUp && enoughTimePassed) {
     lastDetectedStepTime = now
     registerDetectedStep(now)
   }
 
+  previousMotionMagnitude = motionMagnitude
   updateLiveData()
 }
 
